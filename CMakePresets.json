@@ -1,0 +1,200 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base_vc",
+      "description": "Base Visual C++",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/bld_${presetName}",
+      "installDir": "${sourceDir}/inst_${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../tc-base/inst_vc;C:/opt/local"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "vc",
+      "displayName": "MSVC x64 Ninja",
+      "description": "MSVC x64 Debug via Ninja",
+      "inherits": "base_vc",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "vcb",
+      "displayName": "MSVC x64 MsBuild",
+      "description": "MSVC x64 Debug via MSBuild",
+      "inherits": "base_vc",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+
+    {
+      "name": "base_mw",
+      "description": "Base MinGW",
+      "hidden": true,
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/bld_${presetName}",
+      "installDir": "${sourceDir}/inst_${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../tc-base/inst_mw;C:/opt/local"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "mw",
+      "displayName": "MinGW Debug",
+      "description": "Sets GCC",
+      "inherits": "base_mw",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "mwrel",
+      "displayName": "MinGW Release",
+      "description": "Sets GCC release build type",
+      "inherits": "mw",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+
+    {
+      "name": "base_lx",
+      "description": "Base Linux",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/bld_${presetName}",
+      "installDir": "${sourceDir}/inst_${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../tc-base/inst_gcc;/opt/local"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "gcc",
+      "displayName": "Gcc Debug",
+      "description": "Sets Gcc",
+      "inherits": "base_lx",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "gccrel",
+      "displayName": "Gcc Release",
+      "description": "Sets Gcc release",
+      "inherits": "gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "cl",
+      "displayName": "Clang Debug",
+      "description": "Sets Clang",
+      "inherits": "base_lx",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "clrel",
+      "displayName": "Clang Release",
+      "description": "Sets Clang release",
+      "inherits": "cl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    {
+      "name": "vc",
+      "displayName": "msvc",
+      "configurePreset": "vc",
+      "description": "MSVC x64 Ninja",
+      "verbose": true
+    },
+    {
+      "name": "vcb",
+      "displayName": "msvc msbuild",
+      "configurePreset": "vcb",
+      "configuration": "Debug",
+      "description": "MSVC x64 MSBuild",
+      "verbose": true
+    },
+    {
+      "name": "mw",
+      "displayName": "mingw",
+      "configurePreset": "mw",
+      "description": "MinGW x64 Debug",
+      "verbose": true
+    },
+    {
+      "name": "mwrel",
+      "displayName": "mingw rel",
+      "configurePreset": "mwrel",
+      "description": "MinGW x64 Release",
+      "verbose": true
+    },
+    {
+      "name": "gcc",
+      "displayName": "linux gcc",
+      "configurePreset": "gcc",
+      "description": "Linux Gcc x64 Debug",
+      "verbose": true
+    },
+    {
+      "name": "gccrel",
+      "displayName": "linux gcc rel",
+      "configurePreset": "gccrel",
+      "description": "Linux Gcc x64 Release",
+      "verbose": true
+    },
+    {
+      "name": "cl",
+      "displayName": "linux clang",
+      "configurePreset": "cl",
+      "description": "Linux Clang x64 Debug",
+      "verbose": true
+    },
+    {
+      "name": "clrel",
+      "displayName": "linux clang rel",
+      "configurePreset": "clrel",
+      "description": "Linux Clang x64 Release",
+      "verbose": true
+    }
+  ]
+}
