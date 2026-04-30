@@ -110,7 +110,7 @@ Example source:
 #include <iostream>
 
 int main() {
-    TC::Sqlite db("test.db");
+    TC::SqliteDb db("test.db", SQLITE_OPEN_READWRITE);
     // Use the database
     return 0;
 }

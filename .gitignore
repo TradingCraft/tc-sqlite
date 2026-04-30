@@ -55,6 +55,7 @@ Testing/
 .qt/
 .vscode/
 .codex
+tmp*.md
 
 
 # Claude Code: commit shared config, ignore per-user state

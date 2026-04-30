@@ -29,7 +29,8 @@ SqliteDb::SqliteDb(std::string_view filename, int flags) :
   m_dbh{}, m_filename{filename}, m_flags{flags}, m_rc{0}, m_ex{SqliteExceptionsEnabled}
 {
   sqlite3* dbh = nullptr;
-  int rv = m_rc = sqlite3_open_v2(filename.data(), &dbh, flags, nullptr);
+  // m_filename is a std::string copy of filename — guaranteed NUL-terminated.
+  int rv = m_rc = sqlite3_open_v2(m_filename.c_str(), &dbh, flags, nullptr);
   if(rv == SQLITE_OK) {
     m_dbh.reset(dbh, Sqlite3Deleter);
     Log(debug2, "Constructed Sqlite3 Dbh={}", (void*)m_dbh.get());
@@ -37,6 +38,11 @@ SqliteDb::SqliteDb(std::string_view filename, int flags) :
   }
   else {
     Log(error, "Sqlite3 err={}", sqlite3_errmsg(dbh));
+    // SQLite may return a non-null handle even on failure; it must still be closed.
+    if(dbh) sqlite3_close(dbh);
+    // Propagate the failure: throw when exceptions are enabled so callers
+    // (e.g. OpenSQLiteDB) can detect the failure via the catch path.
+    CheckError(rv, m_ex);
   }
 }
 
@@ -45,6 +51,7 @@ SqliteDb::~SqliteDb() {}
 // https://www.sqlite.org/c3ref/errcode.html
 int SqliteDb::checkError() const
 {
+  if(!m_dbh) return SQLITE_OK;
   int eec = sqlite3_extended_errcode(m_dbh.get());
   if(eec != SQLITE_OK) {
     const char* emsg = sqlite3_errmsg(m_dbh.get());
@@ -79,21 +86,22 @@ int SqliteDb::CheckError(int rc, bool throwOnError)
 // https://www.sqlite.org/c3ref/exec.html
 int SqliteDb::exec(std::string_view stmt) const
 {
+  if(!m_dbh) { m_rc = SQLITE_MISUSE; return CheckError(m_rc, m_ex); }
+  // See declaration: stmt.data() must be NUL-terminated (sqlite3_exec requirement).
   char* errmsg = nullptr;
   int rc = m_rc = sqlite3_exec(m_dbh.get(), stmt.data(), nullptr, nullptr, &errmsg);
   if(errmsg) {
     Log(error, "{}", errmsg); // log before freeing
     sqlite3_free(errmsg);
   }
-  else {
-    CheckError(rc, m_ex);
-  }
+  CheckError(rc, m_ex);
   return rc;
 }
 
 // https://www.sqlite.org/c3ref/prepare.html
 int SqliteDb::prepare(std::string_view sqlStr, SqliteStmt& stmt) const
 {
+  if(!m_dbh) { m_rc = SQLITE_MISUSE; return CheckError(m_rc, m_ex); }
   sqlite3_stmt* ppStmt = nullptr;
   const char* pzTail = nullptr;
   int rc = m_rc = sqlite3_prepare_v3(
@@ -195,7 +203,7 @@ any SqliteStmt::column(int col)
   any val;
   switch(sqlite3_column_type(m_stmt.get(), col)) {
     case SQLITE_INTEGER:
-      val = sqlite3_column_int64(m_stmt.get(), col); // SQLite integers are 64-bit
+      val = static_cast<int64_t>(sqlite3_column_int64(m_stmt.get(), col));
       break;
     case SQLITE_FLOAT:
       val = sqlite3_column_double(m_stmt.get(), col);

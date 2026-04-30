@@ -16,6 +16,7 @@
 #include <string_view>
 #include <cstring>
 #include <tuple>
+#include <type_traits>
 // Prj
 #include <sqlite3.h>
 #include "Assert.hh"
@@ -48,6 +49,14 @@ namespace TC {
     // CREATORS
     SqliteStmt(sqlite3_stmt* stmt = nullptr);
     ~SqliteStmt();
+    // Copy is disabled: two SqliteStmt instances sharing the same sqlite3_stmt*
+    // (via shared_ptr) would also share m_bindPos/m_colPos/m_rc, leading to
+    // silent corruption when both sides advance the cursor independently.
+    // Move is enabled to support factory-return patterns (e.g. SqliteDb::stmt()).
+    SqliteStmt(const SqliteStmt&)            = delete;
+    SqliteStmt& operator=(const SqliteStmt&) = delete;
+    SqliteStmt(SqliteStmt&&)                 = default;
+    SqliteStmt& operator=(SqliteStmt&&)      = default;
 
     // ACCESSORS
     sqlite3_stmt* get()         { return m_stmt.get(); }
@@ -65,26 +74,52 @@ namespace TC {
     template <typename T> int bind(int pos, const T t) = delete;
     template <typename T> int bindref(int pos, const T& t) = delete;
 
-    // Bind tuple by value (stored as a blob)
+    // Block rvalue temporaries from silently compiling with bindref.
+    // SQLITE_STATIC requires the buffer to stay valid until the parameter is
+    // rebound or the statement is finalized — reset() alone does NOT clear
+    // bindings. A temporary is destroyed before step() is ever called.
+    int bindref(int pos, std::string&&) = delete;
+    int bindref(int pos, Blob_t&&)      = delete;
+
+    // Bind tuple by value (stored as a blob).
+    // All element types must be trivially copyable AND standard-layout — the
+    // tuple is memcpy'd raw into the blob.
+    // WARNING: std::tuple layout is compiler/ABI-specific. Do NOT persist these
+    // blobs across builds or use them as a cross-process serialization format.
+    // Same-binary, same-session use only.
     template <typename... Args>
     int bind(int pos, const std::tuple<Args...> args)
     {
-      m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), nullptr);
+      static_assert((std::is_trivially_copyable_v<Args> && ...),
+          "SqliteStmt tuple bind: all element types must be trivially copyable");
+      static_assert((std::is_standard_layout_v<Args> && ...),
+          "SqliteStmt tuple bind: all element types must be standard-layout (tuple blob layout is ABI-specific)");
+      m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), SQLITE_TRANSIENT);
       checkError();
       return m_rc;
     }
 
-    // Bind tuple by reference (stored as a blob)
+    // Bind tuple by reference (stored as a blob).
+    // All element types must be trivially copyable AND standard-layout — same
+    // constraint and ABI caveat as bind(). Same-binary, same-session use only.
     template <typename... Args>
     int bindref(int pos, const std::tuple<Args...>& args)
     {
-      m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), nullptr);
+      static_assert((std::is_trivially_copyable_v<Args> && ...),
+          "SqliteStmt tuple bindref: all element types must be trivially copyable");
+      static_assert((std::is_standard_layout_v<Args> && ...),
+          "SqliteStmt tuple bindref: all element types must be standard-layout (tuple blob layout is ABI-specific)");
+      m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), SQLITE_TRANSIENT);
       checkError();
       return m_rc;
     }
 
     int  step();
-    bool operator++(int); // postfix ++: advance one row; returns true while rows remain
+    // Postfix ++ advances one row and returns true while rows remain, false on
+    // SQLITE_DONE or error.  The bool return is intentional — this is NOT a
+    // standard iterator; it does not return a copy of the prior state.
+    // Typical use:  while(stmt++) { stmt >> col1 >> col2; }
+    bool operator++(int);
 
     int         columnCount()         { return sqlite3_column_count(m_stmt.get()); }
     const char* columnName(int col)   { return sqlite3_column_name(m_stmt.get(), col); }
@@ -98,6 +133,10 @@ namespace TC {
     template <typename... Args>
     void column(int col, std::tuple<Args...>& args)
     {
+      static_assert((std::is_trivially_copyable_v<Args> && ...),
+          "SqliteStmt tuple column: all element types must be trivially copyable");
+      static_assert((std::is_standard_layout_v<Args> && ...),
+          "SqliteStmt tuple column: all element types must be standard-layout (tuple blob layout is ABI-specific)");
       const void* bptr = sqlite3_column_blob(m_stmt.get(), col);
       if(!bptr) return; // SQL NULL — leave args unchanged
       int size = sqlite3_column_bytes(m_stmt.get(), col);
@@ -142,22 +181,27 @@ namespace TC {
   { return m_rc = sqlite3_bind_double(m_stmt.get(), i, val); }
 
   template <> inline int SqliteStmt::bind(int i, const std::string_view val)
-  { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), nullptr); }
+  { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), SQLITE_TRANSIENT); }
 
   template <> inline int SqliteStmt::bind(int i, const char* val)
   {
     if(!val) return m_rc = sqlite3_bind_null(m_stmt.get(), i);
-    return m_rc = sqlite3_bind_text(m_stmt.get(), i, val, static_cast<int>(std::strlen(val)), nullptr);
+    return m_rc = sqlite3_bind_text(m_stmt.get(), i, val, static_cast<int>(std::strlen(val)), SQLITE_TRANSIENT);
   }
 
   template <> inline int SqliteStmt::bind(int i, const std::nullptr_t)
   { return m_rc = sqlite3_bind_null(m_stmt.get(), i); }
 
+  // SQLITE_STATIC: caller promises val remains valid until the parameter is rebound
+  // or the statement is finalized. reset() does NOT clear bindings.
   template <> inline int SqliteStmt::bindref(int i, const std::string& val)
-  { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), nullptr); }
+  { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), SQLITE_STATIC); }
 
+  // SQLITE_STATIC: caller promises the blob buffer remains valid until the parameter
+  // is rebound or the statement is finalized. reset() does NOT clear bindings.
+  // For temporary blobs, copy into a Blob_t and bind by value (SQLITE_TRANSIENT).
   template <> inline int SqliteStmt::bindref(int i, const Blob_t& v)
-  { return m_rc = sqlite3_bind_blob(m_stmt.get(), i, v.data(), static_cast<int>(v.size()), nullptr); }
+  { return m_rc = sqlite3_bind_blob(m_stmt.get(), i, v.data(), static_cast<int>(v.size()), SQLITE_STATIC); }
 
 
   //
@@ -220,6 +264,10 @@ namespace TC {
     int  ce()       const { return checkError(); }
     int  ce2()      const { return SqliteDb::CheckError(m_rc, m_ex); }
 
+    // PRECONDITION: stmt.data() must be NUL-terminated. sqlite3_exec() does not
+    // accept a length; it reads past the view boundary if no NUL is present.
+    // Callers must ensure the view points to a NUL-terminated buffer
+    // (std::string, string literal, or explicitly NUL-terminated char array).
     int exec(std::string_view stmt) const;
     int checkError() const;
 

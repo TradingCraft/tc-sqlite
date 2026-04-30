@@ -3,9 +3,9 @@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(tc-base CONFIG)
-if(@SQLITE_ENABLE_LOAD_EXT_OPT@)
-  set(CMAKE_DL_LIBS @CMAKE_DL_LIBS@)
-endif()
+# dl (libdl) is recorded in the sqlite3 target's INTERFACE_LINK_LIBRARIES by
+# CMake when the library is built, and is propagated to consumers automatically
+# through the exported target file.  No need to set CMAKE_DL_LIBS here.
 
 include("${CMAKE_CURRENT_LIST_DIR}/@TARGETS_EXPORT_NAME@.cmake")
 check_required_components("@PROJECT_NAME@")

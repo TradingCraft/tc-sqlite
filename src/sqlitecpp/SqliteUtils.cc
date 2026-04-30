@@ -27,6 +27,9 @@ int OpenSQLiteDB(const std::string& dbf, SqliteDb& sqlDb, int dbOpenFlags)
       }
     }
     sqlDb = SqliteDb(dbf, dbOpenFlags);
+    // Belt-and-suspenders: if exceptions are disabled, the constructor may
+    // fail silently; check the handle directly so rv reflects the real outcome.
+    if(!sqlDb.get()) rv = 1;
   }
   catch(std::exception& e) {
     Log(e);
@@ -42,7 +45,7 @@ bool TableExists(const SqliteDb& db, std::string_view table)
   try {
     SqliteStmt stmt;
     // Parameterised query: avoids SQL injection for caller-supplied table names
-    if(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?", stmt) != SQLITE_OK)
+    if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name=?", stmt) != SQLITE_OK)
       return false;
     stmt.bind(1, table);
     return stmt.step() == SQLITE_ROW;
@@ -60,7 +63,7 @@ int GetAllTableNames(const SqliteDb& db, std::set<std::string>& tableSet)
   try {
     tableSet.clear();
     SqliteStmt stmt;
-    if(db.prepare("SELECT name FROM sqlite_master WHERE type='table'", stmt) != SQLITE_OK)
+    if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'", stmt) != SQLITE_OK)
       return 1;
     while(stmt++) {
       string tbl;
