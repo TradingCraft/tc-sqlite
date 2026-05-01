@@ -82,6 +82,7 @@ option(SQLITE_ENABLE_RTREE_OPT     "Enable R-Tree spatial index"                
 option(SQLITE_ENABLE_DBSTAT_OPT    "Enable dbstat virtual table"                     OFF)
 option(SQLITE_ENABLE_LOAD_EXT_OPT  "Enable runtime loadable extensions"              OFF)
 option(SQLITE_ENABLE_SESSION_OPT   "Enable session/changeset extension"              OFF)
+option(SQLITE_EXCEPTIONS           "Enable C++ exceptions in sqlitecpp"              ON)
 
 
 # Needed packages

@@ -10,6 +10,12 @@ set(tgt sqlitecpp)
 
 add_library(${tgt} STATIC)
 
+if(SQLITE_EXCEPTIONS)
+  target_compile_definitions(${tgt} PUBLIC SQLITECPP_EXCEPTIONS=1)
+else()
+  target_compile_definitions(${tgt} PUBLIC SQLITECPP_EXCEPTIONS=0)
+endif()
+
 target_sources(${tgt}
     PRIVATE ${libSrcs}
   )

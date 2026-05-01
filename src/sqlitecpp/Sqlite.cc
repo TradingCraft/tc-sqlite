@@ -60,7 +60,9 @@ int SqliteDb::checkError() const
       Log(info, fmt, eec, emsg);
     else {
       Log(error, fmt, eec, emsg);
+#if SQLITECPP_EXCEPTIONS
       if(SqliteExceptionsEnabled && m_ex) throw std::runtime_error(emsg);
+#endif
     }
   }
   return eec;
@@ -77,25 +79,22 @@ int SqliteDb::CheckError(int rc, bool throwOnError)
       Log(info, fmt, rc, emsg);
     else {
       Log(error, fmt, rc, emsg);
+#if SQLITECPP_EXCEPTIONS
       if(SqliteExceptionsEnabled && throwOnError) throw std::runtime_error(emsg);
+#endif
     }
   }
   return rc;
 }
 
 // https://www.sqlite.org/c3ref/exec.html
-int SqliteDb::exec(std::string_view stmt) const
+int SqliteDb::exec(const std::string& stmt) const
 {
   if(!m_dbh) { m_rc = SQLITE_MISUSE; return CheckError(m_rc, m_ex); }
-  // See declaration: stmt.data() must be NUL-terminated (sqlite3_exec requirement).
   char* errmsg = nullptr;
-  int rc = m_rc = sqlite3_exec(m_dbh.get(), stmt.data(), nullptr, nullptr, &errmsg);
-  if(errmsg) {
-    Log(error, "{}", errmsg); // log before freeing
-    sqlite3_free(errmsg);
-  }
-  CheckError(rc, m_ex);
-  return rc;
+  m_rc = sqlite3_exec(m_dbh.get(), stmt.data(), nullptr, nullptr, &errmsg);
+  if(errmsg) sqlite3_free(errmsg); // checkError() retrieves the message via sqlite3_errmsg
+  return checkError();
 }
 
 // https://www.sqlite.org/c3ref/prepare.html
@@ -119,6 +118,56 @@ SqliteStmt SqliteDb::stmt(std::string_view sqlStr) const
   SqliteStmt s;
   prepare(sqlStr, s);
   return s;
+}
+
+void SqliteDb::begin(SqliteTransactionMode mode)
+{
+  switch(mode) {
+    case SqliteTransactionMode::Immediate: exec("BEGIN IMMEDIATE"); break;
+    case SqliteTransactionMode::Exclusive: exec("BEGIN EXCLUSIVE"); break;
+    default:                               exec("BEGIN DEFERRED");  break;
+  }
+}
+
+void SqliteDb::commit()   { exec("COMMIT"); }
+void SqliteDb::rollback() { exec("ROLLBACK"); }
+
+
+// ─── SqliteTransaction ────────────────────────────────────────────────────────
+
+SqliteTransaction::SqliteTransaction(SqliteDb& db, SqliteTransactionMode mode)
+  : m_db(db), m_done(false)
+{
+  m_db.begin(mode);
+  // If BEGIN failed without throwing (exceptions disabled), disarm the
+  // destructor so it cannot ROLLBACK a pre-existing outer transaction.
+  if(m_db.rc() != SQLITE_OK) m_done = true;
+}
+
+SqliteTransaction::~SqliteTransaction() noexcept
+{
+  if(!m_done) {
+#if SQLITECPP_EXCEPTIONS
+    try { m_db.rollback(); }
+    catch(...) {}
+#else
+    m_db.rollback();
+#endif
+  }
+}
+
+void SqliteTransaction::commit()
+{
+  m_db.commit();
+  // Only disarm the destructor on success. A failed commit (no exception thrown)
+  // leaves m_done false so the destructor still rolls back.
+  if(m_db.rc() == SQLITE_OK) m_done = true;
+}
+
+void SqliteTransaction::rollback()
+{
+  m_db.rollback();
+  m_done = true;
 }
 
 
@@ -186,14 +235,19 @@ int SqliteStmt::finalize()
 int SqliteStmt::checkError() const
 {
   if(m_rc != SQLITE_OK) {
-    const char* emsg = sqlite3_errstr(m_rc);
-    const char* fmt = "Sqlite rc={} {}";
+    sqlite3* dbh = sqlite3_db_handle(m_stmt.get());
+    int eec = dbh ? sqlite3_extended_errcode(dbh) : m_rc;
+    const char* emsg = dbh ? sqlite3_errmsg(dbh) : sqlite3_errstr(m_rc);
+    const char* fmt = "Sqlite eec={} {}";
     if(m_rc == SQLITE_ROW || m_rc == SQLITE_DONE)
-      Log(debug2, fmt, m_rc, emsg);
+      Log(debug2, fmt, eec, emsg);
     else {
-      Log(error, fmt, m_rc, emsg);
+      Log(error, fmt, eec, emsg);
+#if SQLITECPP_EXCEPTIONS
       if(SqliteExceptionsEnabled && m_ex) throw std::runtime_error(emsg);
+#endif
     }
+    return eec;
   }
   return m_rc;
 }

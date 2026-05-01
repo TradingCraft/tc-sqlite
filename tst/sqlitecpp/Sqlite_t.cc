@@ -5,11 +5,19 @@
 #include <cstdint>
 #include <filesystem>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
 using namespace TC;
 namespace fs = std::filesystem;
+
+// Compile-time rejection of bindref rvalue temporaries cannot be expressed as a
+// static_assert: GCC treats calling a deleted function as a hard error even
+// inside a requires-expression, rather than evaluating to false. The deletions
+// in Sqlite.hh (bindref(int, string&&) = delete etc.) are verified by the fact
+// that this translation unit compiles — any accidental rvalue bindref call here
+// would break the build.
 
 static constexpr const char* kMemDb  = ":memory:";
 static constexpr int         kRwCreate = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
@@ -425,4 +433,140 @@ TEST_F(SqliteFileTest, MultipleTablesAndSchema)
     EXPECT_EQ(tables.count("a"), 1u);
     EXPECT_EQ(tables.count("b"), 1u);
     EXPECT_EQ(tables.count("c"), 1u);
+}
+
+// ─── Error paths ──────────────────────────────────────────────────────────────
+
+#if SQLITECPP_EXCEPTIONS
+TEST(SqliteDbError, ExecBadSqlThrows)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    EXPECT_THROW(db.exec("NOT VALID SQL"), std::runtime_error);
+}
+
+TEST(SqliteDbError, PrepareBadSqlThrows)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    SqliteStmt s;
+    EXPECT_THROW(db.prepare("SELECT * FROM nonexistent_table_xyz", s), std::runtime_error);
+}
+#endif // SQLITECPP_EXCEPTIONS
+
+TEST(SqliteDbError, ExecOnNullHandleReturnsMisuse)
+{
+    SqliteDb db;   // default-constructed, no open
+    db.ex(false);  // disable throw so we can inspect the return code
+    EXPECT_EQ(db.exec("CREATE TABLE t (n INTEGER)"), SQLITE_MISUSE);
+}
+
+TEST(SqliteDbError, PrepareOnNullHandleReturnsMisuse)
+{
+    SqliteDb db;
+    db.ex(false);
+    SqliteStmt s;
+    EXPECT_EQ(db.prepare("SELECT 1", s), SQLITE_MISUSE);
+}
+
+TEST(SqliteDbError, ExceptionsDisabledReturnsErrorCode)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.ex(false);
+    int rc = db.exec("THIS IS NOT SQL");
+    EXPECT_NE(rc, SQLITE_OK);
+    // reaching here means no exception was thrown
+}
+
+// ─── SqliteTransaction ────────────────────────────────────────────────────────
+
+TEST(SqliteTransaction, CommitPersistsData)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (n INTEGER)");
+    {
+        SqliteTransaction tx(db);
+        db.exec("INSERT INTO t VALUES (1)");
+        tx.commit();
+    }
+    SqliteStmt s = db.stmt("SELECT count(*) FROM t");
+    ASSERT_EQ(s.step(), SQLITE_ROW);
+    int32_t count{};
+    s.column(0, count);
+    EXPECT_EQ(count, 1);
+}
+
+#if SQLITECPP_EXCEPTIONS
+TEST(SqliteTransaction, DestructorRollsBackOnException)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (n INTEGER)");
+    try {
+        SqliteTransaction tx(db);
+        db.exec("INSERT INTO t VALUES (1)");
+        throw std::runtime_error("simulated failure");
+        tx.commit(); // never reached
+    } catch(...) {}
+
+    SqliteStmt s = db.stmt("SELECT count(*) FROM t");
+    ASSERT_EQ(s.step(), SQLITE_ROW);
+    int32_t count{};
+    s.column(0, count);
+    EXPECT_EQ(count, 0);
+}
+#endif // SQLITECPP_EXCEPTIONS
+
+TEST(SqliteTransaction, ExplicitRollbackRevertsData)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (n INTEGER)");
+    {
+        SqliteTransaction tx(db);
+        db.exec("INSERT INTO t VALUES (1)");
+        tx.rollback();
+    } // destructor does nothing — m_done is already true
+    SqliteStmt s = db.stmt("SELECT count(*) FROM t");
+    ASSERT_EQ(s.step(), SQLITE_ROW);
+    int32_t count{};
+    s.column(0, count);
+    EXPECT_EQ(count, 0);
+}
+
+// ─── SqliteDb::changes() and lastInsertRowid() ────────────────────────────────
+
+TEST(SqliteDbMutationInfo, ChangesAfterInsert)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (n INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+    EXPECT_EQ(db.changes(), 1);
+}
+
+TEST(SqliteDbMutationInfo, ChangesAfterMultiRowUpdate)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (n INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+    db.exec("INSERT INTO t VALUES (2)");
+    db.exec("INSERT INTO t VALUES (3)");
+    db.exec("UPDATE t SET n = n + 10");
+    EXPECT_EQ(db.changes(), 3);
+}
+
+TEST(SqliteDbMutationInfo, LastInsertRowid)
+{
+    SqliteDb db(kMemDb, kRwCreate);
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)");
+    db.exec("INSERT INTO t VALUES (42, 'hello')");
+    EXPECT_EQ(db.lastInsertRowid(), 42);
+}
+
+TEST(SqliteDbMutationInfo, ChangesOnNullHandleReturnsZero)
+{
+    SqliteDb db;
+    EXPECT_EQ(db.changes(), 0);
+}
+
+TEST(SqliteDbMutationInfo, LastInsertRowidOnNullHandleReturnsZero)
+{
+    SqliteDb db;
+    EXPECT_EQ(db.lastInsertRowid(), 0);
 }

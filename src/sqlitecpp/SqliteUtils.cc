@@ -18,7 +18,9 @@ namespace TC {
 int OpenSQLiteDB(const std::string& dbf, SqliteDb& sqlDb, int dbOpenFlags)
 {
   int rv = 0;
+#if SQLITECPP_EXCEPTIONS
   try {
+#endif
     if(!(dbOpenFlags & SQLITE_OPEN_CREATE)) {
       std::error_code ec;
       if(!fs::exists(dbf, ec)) {
@@ -30,11 +32,13 @@ int OpenSQLiteDB(const std::string& dbf, SqliteDb& sqlDb, int dbOpenFlags)
     // Belt-and-suspenders: if exceptions are disabled, the constructor may
     // fail silently; check the handle directly so rv reflects the real outcome.
     if(!sqlDb.get()) rv = 1;
+#if SQLITECPP_EXCEPTIONS
   }
   catch(std::exception& e) {
     Log(e);
     rv = 1;
   }
+#endif
   return rv;
 }
 
@@ -42,25 +46,31 @@ int OpenSQLiteDB(const std::string& dbf, SqliteDb& sqlDb, int dbOpenFlags)
 // Does the given table exist in the database?
 bool TableExists(const SqliteDb& db, std::string_view table)
 {
+#if SQLITECPP_EXCEPTIONS
   try {
+#endif
     SqliteStmt stmt;
     // Parameterised query: avoids SQL injection for caller-supplied table names
     if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name=?", stmt) != SQLITE_OK)
       return false;
     stmt.bind(1, table);
     return stmt.step() == SQLITE_ROW;
+#if SQLITECPP_EXCEPTIONS
   }
   catch(const std::exception& e) {
     Log(e);
   }
   return false;
+#endif
 }
 
 
 // Get all table names defined in a given database
 int GetAllTableNames(const SqliteDb& db, std::set<std::string>& tableSet)
 {
+#if SQLITECPP_EXCEPTIONS
   try {
+#endif
     tableSet.clear();
     SqliteStmt stmt;
     if(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'", stmt) != SQLITE_OK)
@@ -71,11 +81,13 @@ int GetAllTableNames(const SqliteDb& db, std::set<std::string>& tableSet)
       tableSet.emplace(std::move(tbl));
     }
     return 0;
+#if SQLITECPP_EXCEPTIONS
   }
   catch(const std::exception& e) {
     Log(e);
   }
   return 1;
+#endif
 }
 
 

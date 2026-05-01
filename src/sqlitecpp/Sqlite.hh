@@ -28,7 +28,10 @@ namespace TC {
 
   using Blob_t = std::vector<uint8_t>;
 
-  constexpr bool SqliteExceptionsEnabled = true;
+#ifndef SQLITECPP_EXCEPTIONS
+#  define SQLITECPP_EXCEPTIONS 1
+#endif
+  constexpr bool SqliteExceptionsEnabled = (SQLITECPP_EXCEPTIONS != 0);
 
   // ================================= SqliteStmt class ==========================================
 
@@ -94,6 +97,10 @@ namespace TC {
           "SqliteStmt tuple bind: all element types must be trivially copyable");
       static_assert((std::is_standard_layout_v<Args> && ...),
           "SqliteStmt tuple bind: all element types must be standard-layout (tuple blob layout is ABI-specific)");
+      static_assert(std::is_trivially_copyable_v<std::tuple<Args...>>,
+          "SqliteStmt tuple bind: std::tuple<Args...> itself must be trivially copyable on this platform");
+      static_assert(std::is_standard_layout_v<std::tuple<Args...>>,
+          "SqliteStmt tuple bind: std::tuple<Args...> itself must be standard-layout on this platform");
       m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), SQLITE_TRANSIENT);
       checkError();
       return m_rc;
@@ -109,6 +116,10 @@ namespace TC {
           "SqliteStmt tuple bindref: all element types must be trivially copyable");
       static_assert((std::is_standard_layout_v<Args> && ...),
           "SqliteStmt tuple bindref: all element types must be standard-layout (tuple blob layout is ABI-specific)");
+      static_assert(std::is_trivially_copyable_v<std::tuple<Args...>>,
+          "SqliteStmt tuple bindref: std::tuple<Args...> itself must be trivially copyable on this platform");
+      static_assert(std::is_standard_layout_v<std::tuple<Args...>>,
+          "SqliteStmt tuple bindref: std::tuple<Args...> itself must be standard-layout on this platform");
       m_rc = sqlite3_bind_blob(m_stmt.get(), pos, &args, static_cast<int>(sizeof(args)), SQLITE_TRANSIENT);
       checkError();
       return m_rc;
@@ -137,11 +148,16 @@ namespace TC {
           "SqliteStmt tuple column: all element types must be trivially copyable");
       static_assert((std::is_standard_layout_v<Args> && ...),
           "SqliteStmt tuple column: all element types must be standard-layout (tuple blob layout is ABI-specific)");
+      static_assert(std::is_trivially_copyable_v<std::tuple<Args...>>,
+          "SqliteStmt tuple column: std::tuple<Args...> itself must be trivially copyable on this platform");
+      static_assert(std::is_standard_layout_v<std::tuple<Args...>>,
+          "SqliteStmt tuple column: std::tuple<Args...> itself must be standard-layout on this platform");
       const void* bptr = sqlite3_column_blob(m_stmt.get(), col);
       if(!bptr) return; // SQL NULL — leave args unchanged
       int size = sqlite3_column_bytes(m_stmt.get(), col);
       TC::Ensures(size == static_cast<int>(sizeof(args)));
-      args = *static_cast<const std::tuple<Args...>*>(bptr);
+      // memcpy avoids aliasing and alignment UB from casting the blob pointer.
+      std::memcpy(&args, bptr, static_cast<size_t>(size));
     }
 
     // Column access: returns std::any (type depends on SQLite column type)
@@ -171,6 +187,11 @@ namespace TC {
   //
   // bind() explicit specialisations — 1-based ordinals
   //
+  // NOTE: these specialisations set m_rc and return it but do NOT call
+  // checkError(). Errors (e.g. SQLITE_RANGE for an out-of-range position) are
+  // silently returned; the next step() will overwrite m_rc and the bind failure
+  // is lost. Use operator<< to bind — it calls checkError() after every bind.
+  // If calling bind() directly, check the return value.
   template <> inline int SqliteStmt::bind(int i, const int32_t val)
   { return m_rc = sqlite3_bind_int(m_stmt.get(), i, val); }
 
@@ -182,6 +203,22 @@ namespace TC {
 
   template <> inline int SqliteStmt::bind(int i, const std::string_view val)
   { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), SQLITE_TRANSIENT); }
+
+  // By value, not by reference: explicit specialisations must match the primary
+  // template's parameter type (const T t), so const std::string& would not
+  // specialise the deleted primary — it would declare a different function.
+  template <> inline int SqliteStmt::bind(int i, const std::string val)
+  { return m_rc = sqlite3_bind_text(m_stmt.get(), i, val.data(), static_cast<int>(val.length()), SQLITE_TRANSIENT); }
+
+  // By value (same reasoning as bind<std::string> above).
+  // Empty vector: data() may be nullptr, which sqlite3_bind_blob treats as NULL.
+  // Use sqlite3_bind_zeroblob to preserve the distinction between NULL and a
+  // zero-length BLOB.
+  template <> inline int SqliteStmt::bind(int i, const Blob_t val)
+  {
+    if(val.empty()) return m_rc = sqlite3_bind_zeroblob(m_stmt.get(), i, 0);
+    return m_rc = sqlite3_bind_blob(m_stmt.get(), i, val.data(), static_cast<int>(val.size()), SQLITE_TRANSIENT);
+  }
 
   template <> inline int SqliteStmt::bind(int i, const char* val)
   {
@@ -199,9 +236,13 @@ namespace TC {
 
   // SQLITE_STATIC: caller promises the blob buffer remains valid until the parameter
   // is rebound or the statement is finalized. reset() does NOT clear bindings.
-  // For temporary blobs, copy into a Blob_t and bind by value (SQLITE_TRANSIENT).
+  // For temporary blobs use bind<Blob_t> (SQLITE_TRANSIENT) instead.
+  // Empty vector: same null-pointer hazard as bind<Blob_t> — use zeroblob.
   template <> inline int SqliteStmt::bindref(int i, const Blob_t& v)
-  { return m_rc = sqlite3_bind_blob(m_stmt.get(), i, v.data(), static_cast<int>(v.size()), SQLITE_STATIC); }
+  {
+    if(v.empty()) return m_rc = sqlite3_bind_zeroblob(m_stmt.get(), i, 0);
+    return m_rc = sqlite3_bind_blob(m_stmt.get(), i, v.data(), static_cast<int>(v.size()), SQLITE_STATIC);
+  }
 
 
   //
@@ -232,6 +273,8 @@ namespace TC {
 
 
   // ================================= SqliteDb class ============================================
+
+  enum class SqliteTransactionMode { Deferred, Immediate, Exclusive };
 
   void Sqlite3Deleter(sqlite3* dbh);
 
@@ -264,21 +307,50 @@ namespace TC {
     int  ce()       const { return checkError(); }
     int  ce2()      const { return SqliteDb::CheckError(m_rc, m_ex); }
 
-    // PRECONDITION: stmt.data() must be NUL-terminated. sqlite3_exec() does not
-    // accept a length; it reads past the view boundary if no NUL is present.
-    // Callers must ensure the view points to a NUL-terminated buffer
-    // (std::string, string literal, or explicitly NUL-terminated char array).
-    int exec(std::string_view stmt) const;
+    int     changes()         const { return m_dbh ? sqlite3_changes(m_dbh.get())           : 0; }
+    int64_t lastInsertRowid() const { return m_dbh ? sqlite3_last_insert_rowid(m_dbh.get()) : 0; }
+
+    int exec(const std::string& stmt) const;
     int checkError() const;
 
     // MODIFIERS
     int prepare(std::string_view sqlStr, SqliteStmt& stmt) const;
     SqliteStmt stmt(std::string_view sqlStr) const;
 
+    void begin(SqliteTransactionMode mode = SqliteTransactionMode::Deferred);
+    void commit();
+    void rollback();
+
     // STATIC MEMBERS
     static int CheckError(int rc, bool throwOnError = SqliteExceptionsEnabled);
 
   }; // class SqliteDb
+
+
+  // ================================= SqliteTransaction class ===================================
+
+  // Scoped RAII transaction guard. Calls ROLLBACK in the destructor if commit()
+  // or rollback() was never called — ensures transactions are never leaked on
+  // exception paths.
+  class SqliteTransaction
+  {
+  public:
+    explicit SqliteTransaction(SqliteDb& db,
+                               SqliteTransactionMode mode = SqliteTransactionMode::Deferred);
+    ~SqliteTransaction() noexcept;
+
+    SqliteTransaction(const SqliteTransaction&)            = delete;
+    SqliteTransaction& operator=(const SqliteTransaction&) = delete;
+    SqliteTransaction(SqliteTransaction&&)                 = delete;
+    SqliteTransaction& operator=(SqliteTransaction&&)      = delete;
+
+    void commit();
+    void rollback();
+
+  private:
+    SqliteDb& m_db;
+    bool      m_done;
+  }; // class SqliteTransaction
 
 
 } // namespace TC

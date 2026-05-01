@@ -62,16 +62,28 @@ doc/            README and LICENSE
 | `SQLITE_ENABLE_DBSTAT_OPT`  | OFF     | dbstat virtual table                |
 | `SQLITE_ENABLE_LOAD_EXT_OPT`| OFF     | Runtime loadable extensions (dlopen)|
 | `SQLITE_ENABLE_SESSION_OPT` | OFF     | Session/changeset extension         |
+| `SQLITE_EXCEPTIONS`         | ON      | C++ exceptions in sqlitecpp         |
 | `BUILD_TESTING`             | ON      | Configure GoogleTest targets        |
 
 ## Design notes
 
 - `SqliteStmt` is move-only (copy is deleted).  Two instances sharing the same
   `sqlite3_stmt*` would also share cursor position, causing silent corruption.
-- `bind<string_view>` / `bind<char*>` use `SQLITE_TRANSIENT` so SQLite copies
-  the text; callers need not manage string lifetime beyond the bind call.
+- `bind<T>` (including `string_view`, `string`, `char*`, `Blob_t`) uses
+  `SQLITE_TRANSIENT` — SQLite copies the value immediately; callers need not
+  manage lifetime beyond the bind call.  `bindref<string>` / `bindref<Blob_t>`
+  use `SQLITE_STATIC` — zero-copy, but the buffer must remain valid until the
+  parameter is rebound or the statement is finalized.  Rvalue overloads of
+  `bindref` are deleted to prevent dangling pointers at compile time.
 - Tuple bind/column overloads store the raw struct bytes as a blob — only
   suitable for tuples of trivially-copyable POD types (enforced via
   `static_assert`).
-- `SqliteExceptionsEnabled` (compile-time constant, `true`) and the per-instance
-  `m_ex` flag together control whether errors throw `std::runtime_error`.
+- `SqliteTransaction` is a non-copyable, non-movable RAII guard: constructor
+  calls `BEGIN`, destructor calls `ROLLBACK` unless `commit()` or `rollback()`
+  was already called (`m_done` flag).  `SqliteDb` also exposes raw `begin()`,
+  `commit()`, and `rollback()` methods for non-RAII use.
+- `SqliteExceptionsEnabled` (driven by the `SQLITE_EXCEPTIONS` CMake option, default ON)
+  and the per-instance `m_ex` flag together control whether errors throw
+  `std::runtime_error`.  With `SQLITE_EXCEPTIONS=OFF` all throw sites are compiled
+  away and `-fno-exceptions` builds are supported; the `try/catch` blocks in
+  `SqliteUtils.cc` are likewise guarded by `#if SQLITECPP_EXCEPTIONS`.

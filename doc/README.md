@@ -20,8 +20,9 @@ Available presets:
 | `cl`     | Linux    | Clang    | Debug   |
 | `clrel`  | Linux    | Clang    | Release |
 | `vc`     | Windows  | MSVC     | Debug   |
+| `vcb`    | Windows  | MSVC     | Debug (MSBuild) |
 | `mw`     | Windows  | MinGW    | Debug   |
-| `mwrel` | Windows  | MinGW    | Release |
+| `mwrel`  | Windows  | MinGW    | Release |
 
 Each preset places build artifacts in `bld_<preset>/` and install output in `inst_<preset>/`.
 
@@ -35,7 +36,7 @@ cmake --preset gcc -DBUILD_TESTING=OFF
 
 ## Options
 
-The following CMake options control SQLite features:
+The following CMake options control SQLite features and wrapper behaviour:
 
 - `SQLITE_BUILD_SHELL`: Build the sqlite3 command-line shell (default ON)
 - `SQLITE_ENABLE_FTS5_OPT`: Enable FTS5 full-text search (default ON)
@@ -44,6 +45,8 @@ The following CMake options control SQLite features:
 - `SQLITE_ENABLE_DBSTAT_OPT`: Enable dbstat virtual table (default OFF)
 - `SQLITE_ENABLE_LOAD_EXT_OPT`: Enable runtime loadable extensions (default OFF)
 - `SQLITE_ENABLE_SESSION_OPT`: Enable session/changeset extension (default OFF)
+- `SQLITE_EXCEPTIONS`: Enable C++ exceptions in sqlitecpp (default ON). Set to OFF to compile away all throw sites, e.g. for `-fno-exceptions` builds.
+- `BUILD_TESTING`: Configure GoogleTest targets (default ON)
 
 ## Test
 
@@ -89,6 +92,38 @@ Installed files include:
 - `<prefix>/include/SqliteUtils.hh`
 - `<prefix>/lib/cmake/tc-sqlite/*.cmake`
 
+## Transactions
+
+`SqliteTransaction` is a scoped RAII guard that ensures a transaction is never
+left open on exception paths.  It calls `ROLLBACK` in its destructor if
+`commit()` or `rollback()` was never called.
+
+```cpp
+TC::SqliteTransaction tx(db);                    // BEGIN DEFERRED
+TC::SqliteTransaction tx(db, TC::SqliteTransactionMode::Immediate);  // BEGIN IMMEDIATE
+TC::SqliteTransaction tx(db, TC::SqliteTransactionMode::Exclusive);  // BEGIN EXCLUSIVE
+
+tx.commit();    // COMMIT  — destructor does nothing afterwards
+tx.rollback();  // ROLLBACK — destructor does nothing afterwards
+// scope exit without commit/rollback → automatic ROLLBACK
+```
+
+`SqliteDb` also exposes the raw transaction calls directly for scripts or
+non-RAII patterns:
+
+```cpp
+db.begin();     // or db.begin(TC::SqliteTransactionMode::Immediate)
+db.commit();
+db.rollback();
+```
+
+Post-mutation helpers:
+
+```cpp
+int     n   = db.changes();          // rows affected by last INSERT/UPDATE/DELETE
+int64_t rid = db.lastInsertRowid();  // rowid of last INSERT
+```
+
 ## Consumer Usage
 
 In another CMake project:
@@ -110,8 +145,26 @@ Example source:
 #include <iostream>
 
 int main() {
-    TC::SqliteDb db("test.db", SQLITE_OPEN_READWRITE);
-    // Use the database
+    // SQLITE_OPEN_CREATE creates the file if it does not exist.
+    TC::SqliteDb db("test.db", SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+
+    db.exec("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, val TEXT)");
+
+    {
+        TC::SqliteTransaction tx(db);
+        TC::SqliteStmt ins = db.stmt("INSERT INTO t (val) VALUES (?)");
+        ins << std::string("hello");
+        ins.step();
+        tx.commit();
+    }
+
+    TC::SqliteStmt sel = db.stmt("SELECT id, val FROM t");
+    while(sel++) {
+        int32_t id{};
+        std::string val;
+        sel >> id >> val;
+        std::cout << id << ": " << val << "\n";
+    }
     return 0;
 }
 ```

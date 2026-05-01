@@ -89,7 +89,8 @@
       "binaryDir": "${sourceDir}/bld_${presetName}",
       "installDir": "${sourceDir}/inst_${presetName}",
       "cacheVariables": {
-        "CMAKE_PREFIX_PATH": "${sourceDir}/../tc-base/inst_gcc;/opt/local"
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../tc-base/inst_gcc;/opt/local",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       },
       "condition": {
         "type": "equals",
